@@ -1,0 +1,607 @@
+-- [[ Rscripts Risk Notice ]]
+-- This script is not verified by rscripts.net. Deal with caution.
+--
+-- Stay safe:
+--   • Never log in on unofficial Roblox sites or lookalike domains.
+--   • Real Roblox links use roblox.com (check the .com ending).
+--   • Treat fake Roblox login / "claim reward" pages as phishing.
+-- [[ End Rscripts Risk Notice ]]
+--[[
+    FE Emote Player
+    Clean & Stable GUI (Emote ID, Play, HipHeight Slider, Time Position Slider)
+]]
+
+-- Cleanup any previous instance
+pcall(function()
+    local CoreGui = game:GetService("CoreGui")
+    local existing = CoreGui:FindFirstChild("EmotePlayerGui")
+    if existing then existing:Destroy() end
+end)
+
+local function missing(t, f, fallback)
+    if type(f) == t then return f end
+    return fallback 
+end
+
+cloneref = missing("function", cloneref, function(...) return ... end)
+
+local Services = setmetatable({}, {
+    __index = function(_, name)
+        return cloneref(game:GetService(name))
+    end
+})
+
+local Players = Services.Players
+local RunService = Services.RunService
+local UserInputService = Services.UserInputService
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+
+--// Disable default animations so they don't override emotes
+local function disableAnimations(char)
+    if not char then return end
+    local animate = char:FindFirstChild("Animate")
+    if animate then
+        animate.Disabled = true
+    end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        local animator = hum:FindFirstChildOfClass("Animator")
+        if animator then
+            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+                pcall(function() track:Stop(0) end)
+            end
+        end
+        for _, track in ipairs(hum:GetPlayingAnimationTracks()) do
+            pcall(function() track:Stop(0) end)
+        end
+    end
+end
+
+disableAnimations(character)
+
+--// Settings
+local Settings = {
+    ["Stop On Move"]    = true,
+    ["Fade In"]         = 0,
+    ["Fade Out"]        = 1e29,
+    ["Weight"]          = 1,
+    ["Speed"]           = 0,
+    ["Allow Invisible"] = true,
+    ["Time Position"]   = 1,
+}
+
+local CurrentTrack
+local lastPosition = (character.PrimaryPart and character.PrimaryPart.Position) or Vector3.new()
+local activeConnections = {}
+
+local function cleanupConnections()
+    for _, conn in ipairs(activeConnections) do
+        if conn and conn.Connected then pcall(function() conn:Disconnect() end) end
+    end
+    activeConnections = {}
+end
+
+local function trackConnection(conn)
+    table.insert(activeConnections, conn)
+    return conn
+end
+
+--// Emote ID Parser
+local function extractIdFromInput(input)
+    local num = tonumber(input)
+    if num then return num end
+    for _, pat in ipairs({
+        "rbxassetid://(%d+)",
+        "roblox%.com/catalog/(%d+)",
+        "roblox%.com/library/(%d+)",
+        "roblox%.com/asset/%?id=(%d+)",
+    }) do
+        local m = string.match(input, pat)
+        if m then return tonumber(m) end
+    end
+    return nil
+end
+
+local resolvedAnimIdCache = {}
+
+local function resolveAnimId(id)
+    if resolvedAnimIdCache[id] then
+        return resolvedAnimIdCache[id]
+    end
+    local animId
+    local ok, result = pcall(function() return game:GetObjects("rbxassetid://" .. tostring(id)) end)
+    if ok and result and #result > 0 and result[1]:IsA("Animation") then
+        animId = result[1].AnimationId
+    else
+        animId = "rbxassetid://" .. tostring(id)
+    end
+    resolvedAnimIdCache[id] = animId
+    return animId
+end
+
+--// Animation Loader
+local function LoadTrack(id)
+    disableAnimations(character)
+
+    local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+    if animator then
+        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+            pcall(function() track:Stop(0) end)
+        end
+    end
+    if humanoid then
+        for _, track in ipairs(humanoid:GetPlayingAnimationTracks()) do
+            pcall(function() track:Stop(0) end)
+        end
+    end
+    if CurrentTrack then
+        pcall(function() CurrentTrack:Stop(0) end)
+        CurrentTrack = nil
+    end
+
+    local animId = resolveAnimId(id)
+    local newAnim = Instance.new("Animation")
+    newAnim.AnimationId = animId
+
+    local newTrack = animator and animator:LoadAnimation(newAnim) or humanoid:LoadAnimation(newAnim)
+    newTrack.Priority = Enum.AnimationPriority.Action4
+
+    newTrack:Play(Settings["Fade In"], Settings["Weight"], 1)
+    CurrentTrack = newTrack
+
+    task.spawn(function()
+        local track = newTrack
+        task.wait(0.2)
+        if CurrentTrack == track then
+            local len = track.Length
+            if len > 0 and Settings["Time Position"] then
+                local pct = math.clamp(Settings["Time Position"], 0, 1)
+                local targetTime = pct * len
+                if pct >= 1 then targetTime = math.max(0, len - 0.001) end
+                track.TimePosition = math.clamp(targetTime, 0, math.max(0, len - 0.001))
+            end
+            track:AdjustSpeed(0)
+            track:Stop(Settings["Fade Out"])
+        end
+    end)
+
+    return newTrack
+end
+
+local function StopTrack()
+    if CurrentTrack then CurrentTrack:Stop(0); CurrentTrack = nil end
+end
+
+--// GUI Setup
+local guiParent
+local ok = pcall(function() guiParent = Services.CoreGui end)
+if not ok or not guiParent then guiParent = player:WaitForChild("PlayerGui") end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "EmotePlayerGui"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = guiParent
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 300, 0, 200)
+mainFrame.Position = UDim2.new(0.5, -150, 0.3, 0)
+mainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+mainFrame.Active = true
+mainFrame.Parent = screenGui
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 10)
+
+-- Title bar (drag handle)
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 28)
+titleBar.BackgroundTransparency = 1
+titleBar.Active = true
+titleBar.Parent = mainFrame
+
+-- Custom drag on title bar only
+local draggingGui = false
+local dragStart, startPos
+
+titleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        draggingGui = true
+        dragStart = input.Position
+        startPos = mainFrame.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                draggingGui = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if draggingGui and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+-- Title
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -36, 0, 28)
+title.Position = UDim2.new(0, 10, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "Emote Player"
+title.Font = Enum.Font.GothamBold
+title.TextSize = 14
+title.TextColor3 = Color3.new(1, 1, 1)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = titleBar
+
+-- Minimize
+local minimized = false
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.new(0, 24, 0, 24)
+minBtn.Position = UDim2.new(1, -28, 0, 2)
+minBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+minBtn.Text = "–"
+minBtn.TextColor3 = Color3.new(1, 1, 1)
+minBtn.Font = Enum.Font.GothamBold
+minBtn.TextSize = 16
+minBtn.Parent = titleBar
+Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 6)
+
+local content = Instance.new("Frame")
+content.Size = UDim2.new(1, 0, 1, -28)
+content.Position = UDim2.new(0, 0, 0, 28)
+content.BackgroundTransparency = 1
+content.Parent = mainFrame
+
+minBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    content.Visible = not minimized
+    mainFrame.Size = minimized and UDim2.new(0, 300, 0, 32) or UDim2.new(0, 300, 0, 200)
+    minBtn.Text = minimized and "+" or "–"
+end)
+
+-- Emote ID Box
+local emoteBox = Instance.new("TextBox")
+emoteBox.Name = "EmoteBox"
+emoteBox.Size = UDim2.new(1, -20, 0, 26)
+emoteBox.Position = UDim2.new(0, 10, 0, 4)
+emoteBox.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+emoteBox.Text = "93224413172183"
+emoteBox.PlaceholderText = "Emote ID or URL..."
+emoteBox.PlaceholderColor3 = Color3.fromRGB(140, 140, 140)
+emoteBox.TextColor3 = Color3.new(1, 1, 1)
+emoteBox.Font = Enum.Font.Gotham
+emoteBox.TextSize = 14
+emoteBox.ClearTextOnFocus = false
+emoteBox.Parent = content
+Instance.new("UICorner", emoteBox).CornerRadius = UDim.new(0, 6)
+
+-- Play Button
+local btnFrame = Instance.new("Frame")
+btnFrame.Size = UDim2.new(1, -20, 0, 28)
+btnFrame.Position = UDim2.new(0, 10, 0, 36)
+btnFrame.BackgroundTransparency = 1
+btnFrame.Parent = content
+
+local playBtn = Instance.new("TextButton")
+playBtn.Size = UDim2.new(1, 0, 1, 0)
+playBtn.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+playBtn.Text = "▶ Play"
+playBtn.TextColor3 = Color3.new(1, 1, 1)
+playBtn.Font = Enum.Font.GothamBold
+playBtn.TextSize = 14
+playBtn.Parent = btnFrame
+Instance.new("UICorner", playBtn).CornerRadius = UDim.new(0, 6)
+
+playBtn.MouseButton1Click:Connect(function()
+    local input = emoteBox.Text
+    if input and input ~= "" then
+        local id = extractIdFromInput(input)
+        if id then
+            LoadTrack(id)
+        else
+            warn("[EmotePlayer] Invalid ID: " .. tostring(input))
+        end
+    end
+end)
+
+-- HipHeight Slider
+local defaultHipHeight = humanoid.HipHeight
+
+local hipContainer = Instance.new("Frame")
+hipContainer.Name = "HipContainer"
+hipContainer.Size = UDim2.new(1, -20, 0, 42)
+hipContainer.Position = UDim2.new(0, 10, 0, 70)
+hipContainer.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+hipContainer.Active = true
+hipContainer.Parent = content
+Instance.new("UICorner", hipContainer).CornerRadius = UDim.new(0, 8)
+
+local hipLabel = Instance.new("TextLabel")
+hipLabel.Name = "HipLabel"
+hipLabel.Size = UDim2.new(0.5, -10, 0, 16)
+hipLabel.Position = UDim2.new(0, 10, 0, 3)
+hipLabel.BackgroundTransparency = 1
+hipLabel.Text = string.format("HipHeight: %.1f", defaultHipHeight)
+hipLabel.TextColor3 = Color3.new(1, 1, 1)
+hipLabel.Font = Enum.Font.Gotham
+hipLabel.TextSize = 12
+hipLabel.TextXAlignment = Enum.TextXAlignment.Left
+hipLabel.Parent = hipContainer
+
+local hipInput = Instance.new("TextBox")
+hipInput.Name = "HipInput"
+hipInput.Size = UDim2.new(0.3, -10, 0, 16)
+hipInput.Position = UDim2.new(0.7, 0, 0, 3)
+hipInput.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+hipInput.Text = string.format("%.1f", defaultHipHeight)
+hipInput.TextColor3 = Color3.new(1, 1, 1)
+hipInput.Font = Enum.Font.Gotham
+hipInput.TextSize = 12
+hipInput.ClearTextOnFocus = false
+hipInput.Parent = hipContainer
+Instance.new("UICorner", hipInput).CornerRadius = UDim.new(0, 4)
+
+local hipSliderBar = Instance.new("Frame")
+hipSliderBar.Size = UDim2.new(1, -30, 0, 8)
+hipSliderBar.Position = UDim2.new(0, 15, 0, 25)
+hipSliderBar.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+hipSliderBar.Parent = hipContainer
+Instance.new("UICorner", hipSliderBar).CornerRadius = UDim.new(0, 4)
+
+local hipFill = Instance.new("Frame")
+hipFill.Size = UDim2.new(0, 0, 1, 0)
+hipFill.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+hipFill.Parent = hipSliderBar
+Instance.new("UICorner", hipFill).CornerRadius = UDim.new(0, 4)
+
+local hipThumb = Instance.new("Frame")
+hipThumb.Size = UDim2.new(0, 14, 0, 14)
+hipThumb.AnchorPoint = Vector2.new(0.5, 0.5)
+hipThumb.Position = UDim2.new(0, 0, 0.5, 0)
+hipThumb.BackgroundColor3 = Color3.fromRGB(230, 230, 230)
+hipThumb.Parent = hipSliderBar
+Instance.new("UICorner", hipThumb).CornerRadius = UDim.new(1, 0)
+
+local SLIDER_HIP_MIN, SLIDER_HIP_MAX = 0, 200
+
+local function setHipHeight(value, bypassClamp)
+    if not bypassClamp then
+        value = math.clamp(value, SLIDER_HIP_MIN, SLIDER_HIP_MAX)
+    end
+    value = math.floor(value * 10) / 10
+    hipLabel.Text = string.format("HipHeight: %.1f", value)
+    hipInput.Text = string.format("%.1f", value)
+    local rel = math.clamp((value - SLIDER_HIP_MIN) / (SLIDER_HIP_MAX - SLIDER_HIP_MIN), 0, 1)
+    hipFill.Size = UDim2.new(rel, 0, 1, 0)
+    hipThumb.Position = UDim2.new(rel, 0, 0.5, 0)
+    if humanoid then humanoid.HipHeight = value end
+end
+
+local hipDragging = false
+local function hipUpdateFromInput(input)
+    local rel = math.clamp((input.Position.X - hipSliderBar.AbsolutePosition.X) / hipSliderBar.AbsoluteSize.X, 0, 1)
+    setHipHeight(SLIDER_HIP_MIN + (SLIDER_HIP_MAX - SLIDER_HIP_MIN) * rel, false)
+end
+
+hipSliderBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        hipDragging = true; hipUpdateFromInput(input)
+    end
+end)
+hipThumb.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        hipDragging = true; hipUpdateFromInput(input)
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if hipDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        hipUpdateFromInput(input)
+    end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if hipDragging and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+        hipDragging = false
+    end
+end)
+
+hipInput.FocusLost:Connect(function(enter)
+    if enter then
+        local num = tonumber(hipInput.Text)
+        if num then setHipHeight(num, true) else hipInput.Text = string.format("%.1f", humanoid.HipHeight) end
+    end
+end)
+
+setHipHeight(defaultHipHeight)
+
+-- Time Position Slider
+local tpContainer = Instance.new("Frame")
+tpContainer.Name = "TpContainer"
+tpContainer.Size = UDim2.new(1, -20, 0, 42)
+tpContainer.Position = UDim2.new(0, 10, 0, 118)
+tpContainer.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+tpContainer.Active = true
+tpContainer.Parent = content
+Instance.new("UICorner", tpContainer).CornerRadius = UDim.new(0, 8)
+
+local tpLabel = Instance.new("TextLabel")
+tpLabel.Name = "TpLabel"
+tpLabel.Size = UDim2.new(0.5, -10, 0, 16)
+tpLabel.Position = UDim2.new(0, 10, 0, 3)
+tpLabel.BackgroundTransparency = 1
+tpLabel.Text = string.format("Time Pos: %.2f", Settings["Time Position"])
+tpLabel.TextColor3 = Color3.new(1, 1, 1)
+tpLabel.Font = Enum.Font.Gotham
+tpLabel.TextSize = 12
+tpLabel.TextXAlignment = Enum.TextXAlignment.Left
+tpLabel.Parent = tpContainer
+
+local tpInput = Instance.new("TextBox")
+tpInput.Name = "TpInput"
+tpInput.Size = UDim2.new(0.3, -10, 0, 16)
+tpInput.Position = UDim2.new(0.7, 0, 0, 3)
+tpInput.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+tpInput.Text = string.format("%.2f", Settings["Time Position"])
+tpInput.TextColor3 = Color3.new(1, 1, 1)
+tpInput.Font = Enum.Font.Gotham
+tpInput.TextSize = 12
+tpInput.ClearTextOnFocus = false
+tpInput.Parent = tpContainer
+Instance.new("UICorner", tpInput).CornerRadius = UDim.new(0, 4)
+
+local tpSliderBar = Instance.new("Frame")
+tpSliderBar.Size = UDim2.new(1, -30, 0, 8)
+tpSliderBar.Position = UDim2.new(0, 15, 0, 25)
+tpSliderBar.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+tpSliderBar.Parent = tpContainer
+Instance.new("UICorner", tpSliderBar).CornerRadius = UDim.new(0, 4)
+
+local tpFill = Instance.new("Frame")
+tpFill.Size = UDim2.new(Settings["Time Position"], 0, 1, 0)
+tpFill.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+tpFill.Parent = tpSliderBar
+Instance.new("UICorner", tpFill).CornerRadius = UDim.new(0, 4)
+
+local tpThumb = Instance.new("Frame")
+tpThumb.Size = UDim2.new(0, 14, 0, 14)
+tpThumb.AnchorPoint = Vector2.new(0.5, 0.5)
+tpThumb.Position = UDim2.new(Settings["Time Position"], 0, 0.5, 0)
+tpThumb.BackgroundColor3 = Color3.fromRGB(230, 230, 230)
+tpThumb.Parent = tpSliderBar
+Instance.new("UICorner", tpThumb).CornerRadius = UDim.new(1, 0)
+
+local function setTimePosition(value)
+    value = math.clamp(value, 0, 1)
+    value = math.floor(value * 100) / 100
+    Settings["Time Position"] = value
+    tpLabel.Text = string.format("Time Pos: %.2f", value)
+    tpInput.Text = string.format("%.2f", value)
+    tpFill.Size = UDim2.new(value, 0, 1, 0)
+    tpThumb.Position = UDim2.new(value, 0, 0.5, 0)
+
+    if CurrentTrack then
+        local len = CurrentTrack.Length
+        if len > 0 then
+            local targetTime = value * len
+            if value >= 1 then targetTime = math.max(0, len - 0.001) end
+            CurrentTrack.TimePosition = math.clamp(targetTime, 0, math.max(0, len - 0.001))
+        end
+    end
+end
+
+local tpDragging = false
+local function tpUpdateFromInput(input)
+    local rel = math.clamp((input.Position.X - tpSliderBar.AbsolutePosition.X) / tpSliderBar.AbsoluteSize.X, 0, 1)
+    setTimePosition(rel)
+end
+
+tpSliderBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        tpDragging = true; tpUpdateFromInput(input)
+    end
+end)
+tpThumb.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        tpDragging = true; tpUpdateFromInput(input)
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if tpDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        tpUpdateFromInput(input)
+    end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if tpDragging and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+        tpDragging = false
+    end
+end)
+
+tpInput.FocusLost:Connect(function(enter)
+    if enter then
+        local num = tonumber(tpInput.Text)
+        if num then setTimePosition(num) else tpInput.Text = string.format("%.2f", Settings["Time Position"]) end
+    end
+end)
+
+--// Stop On Move
+RunService.RenderStepped:Connect(function()
+    if character and character.PrimaryPart then
+        if Settings["Stop On Move"] and CurrentTrack and CurrentTrack.IsPlaying then
+            local moved = (character.PrimaryPart.Position - lastPosition).Magnitude > 0.1
+            local jumped = humanoid and humanoid:GetState() == Enum.HumanoidStateType.Jumping
+            if moved or jumped then StopTrack() end
+        end
+        lastPosition = character.PrimaryPart.Position
+    end
+end)
+
+--// Collision Bypass
+local originalCollisionStates = {}
+local lastFixClipState = Settings["Allow Invisible"]
+
+local function saveCollisionStates()
+    if not character then return end
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") and part ~= humanoidRootPart then
+            originalCollisionStates[part] = part.CanCollide
+        end
+    end
+end
+
+local function disableCollisions()
+    if not Settings["Allow Invisible"] or not character then return end
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") and part ~= humanoidRootPart then
+            part.CanCollide = false
+        end
+    end
+end
+
+local function restoreCollisions()
+    for part, val in pairs(originalCollisionStates) do
+        if part and part.Parent then part.CanCollide = val end
+    end
+    originalCollisionStates = {}
+end
+
+local function setupCollisionLoop()
+    saveCollisionStates()
+    lastFixClipState = Settings["Allow Invisible"]
+    local conn
+    conn = RunService.Stepped:Connect(function()
+        if character and character.Parent then
+            local cur = Settings["Allow Invisible"]
+            if lastFixClipState ~= cur then
+                if cur then saveCollisionStates(); disableCollisions() else restoreCollisions() end
+                lastFixClipState = cur
+            elseif cur then
+                disableCollisions()
+            end
+        else
+            restoreCollisions()
+            if conn then conn:Disconnect() end
+        end
+    end)
+    trackConnection(conn)
+end
+
+setupCollisionLoop()
+
+--// Respawn Handler
+player.CharacterAdded:Connect(function(newChar)
+    StopTrack()
+    restoreCollisions()
+    cleanupConnections()
+    character = newChar
+    humanoid = character:WaitForChild("Humanoid")
+    humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+    lastPosition = humanoidRootPart.Position
+    disableAnimations(character)
+    setupCollisionLoop()
+end)
+
+print("[EmotePlayer] Loaded successfully without Front Lock.")
