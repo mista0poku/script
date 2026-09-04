@@ -367,9 +367,11 @@ hipThumb.BackgroundColor3 = Color3.fromRGB(230, 230, 230)
 hipThumb.Parent = hipSliderBar
 Instance.new("UICorner", hipThumb).CornerRadius = UDim.new(1, 0)
 
-local SLIDER_HIP_MIN, SLIDER_HIP_MAX = 0, 200
+-- Keep HipHeight at or above 2 for both slider and text input.
+local SLIDER_HIP_MIN, SLIDER_HIP_MAX = 2, 200
 
 local function setHipHeight(value, bypassClamp)
+    value = math.max(value, SLIDER_HIP_MIN)
     if not bypassClamp then
         value = math.clamp(value, SLIDER_HIP_MIN, SLIDER_HIP_MAX)
     end
@@ -599,6 +601,7 @@ player.CharacterAdded:Connect(function(newChar)
     character = newChar
     humanoid = character:WaitForChild("Humanoid")
     humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+    setHipHeight(humanoid.HipHeight, true)
     lastPosition = humanoidRootPart.Position
     disableAnimations(character)
     setupCollisionLoop()
